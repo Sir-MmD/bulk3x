@@ -14,6 +14,7 @@ Add Expiry and Traffic in Bulk to 3x-ui Databases
 
 1.  Clone the repository or download `bulk3x.py`.
 2.  Install the requirement:
+   
     ```bash
     pip install rich
     ```
