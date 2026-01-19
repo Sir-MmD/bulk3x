@@ -12,12 +12,78 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich import box
 from rich.text import Text
 
-# Initialize Console
 console = Console()
+
+def ask_int(prompt_text, default=None):
+    while True:
+        val = Prompt.ask(prompt_text, default=str(default) if default is not None else None)
+        if val and val.strip().lower() == 'x':
+            console.print("[yellow]Exiting...[/yellow]")
+            sys.exit(0)
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            pass
+        if val is None or val == "":
+             continue
+        console.print("[red]Please enter a valid integer (or 'x' to exit).[/red]")
+
+def ask_float(prompt_text, default=None):
+    while True:
+        val = Prompt.ask(prompt_text, default=str(default) if default is not None else None)
+        if val and val.strip().lower() == 'x':
+            console.print("[yellow]Exiting...[/yellow]")
+            sys.exit(0)
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+        if val is None or val == "":
+            continue
+        console.print("[red]Please enter a valid number (or 'x' to exit).[/red]")
+
+def get_client_stats(cursor):
+    stats = {}
+    try:
+        temp_cursor = cursor.connection.cursor()
+        temp_cursor.execute("SELECT email, up, down FROM client_traffics")
+        for row in temp_cursor.fetchall():
+            email = row['email']
+            if email:
+                stats[email.strip().lower()] = {'up': row['up'], 'down': row['down']}
+        temp_cursor.close()
+    except Exception as e:
+        console.print(f"[bold red]Warning: Failed to fetch client stats:[/bold red] {e}")
+    return stats
+
+def is_user_active(client, stats):
+    # 1. Check Explicit Enable
+    is_enabled = client.get('enable', False)
+    if isinstance(is_enabled, str): is_enabled = is_enabled.lower() in ('true', '1')
+    elif isinstance(is_enabled, int): is_enabled = is_enabled == 1
+    
+    if not is_enabled: return False
+
+    # 2. Check Expiry
+    expiry = client.get('expiryTime', 0)
+    current_time_ms = int(time.time() * 1000)
+    if expiry > 0 and expiry < current_time_ms: return False
+    
+    # 3. Check Traffic
+    total = client.get('totalGB', 0)
+    if total > 0:
+        email = client.get('email')
+        if email:
+            usage = stats.get(email.strip().lower(), {'up':0, 'down':0})
+            used = usage['up'] + usage['down']
+            if used >= total: return False
+        
+    return True
+
 
 def print_header():
     console.print(Panel.fit(
-        "[bold cyan]Bulk3X[/bold cyan]\n[dim]Add Expiry and Traffic in Bulk to 3x-ui Databases[/dim]",
+        "[bold cyan]Bulk3X[/bold cyan]\n[dim]Manage Expiry and Traffic Quotas with Ease[/dim]",
         border_style="cyan",
         padding=(1, 2)
     ))
@@ -43,16 +109,12 @@ def menu_select_db(options):
     for i, opt in enumerate(options):
         table.add_row(str(i + 1), opt)
     
-    table.add_row("", "")
-    table.add_row("[red]0[/red]", "[red]Exit[/red]")
-
     console.print(table)
+    console.print("[dim]Enter [bold red]x[/bold red] to Exit script[/dim]")
     
     while True:
-        choice = IntPrompt.ask("Enter choice number", default=0)
-        if choice == 0:
-            console.print("[yellow]Exiting...[/yellow]")
-            sys.exit(0)
+        choice = ask_int("Enter choice number", default=1 if options else None) 
+        
         if 1 <= choice <= len(options):
             return choice - 1
         console.print("[red]Invalid choice. Please try again.[/red]")
@@ -89,10 +151,10 @@ def menu_select_inbound(inbounds):
         inbound_map[idx - 1] = row['id']
 
     console.print(table)
-    console.print("[dim]Enter [bold red]0[/bold red] to go Back to DB selection[/dim]")
+    console.print("[dim]Enter [bold red]0[/bold red] to go Back, or [bold red]x[/bold red] to Exit script[/dim]")
 
     while True:
-        choice = IntPrompt.ask("Enter choice number")
+        choice = ask_int("Enter choice number")
         if choice == 0:
             return 'BACK'
         if choice == 1:
@@ -101,23 +163,28 @@ def menu_select_inbound(inbounds):
             return inbound_map[choice - 1]
         console.print("[red]Invalid choice. Please try again.[/red]")
 
-def menu_select_op():
-    table = Table(title="Select Operation", box=box.ROUNDED, show_header=False)
+def menu_select_user_status():
+    table = Table(title="Select User Status", box=box.ROUNDED, show_header=False)
     table.add_column("No.", style="cyan", justify="right")
-    table.add_column("Operation", style="bold white")
+    table.add_column("Status", style="bold white")
     
-    table.add_row("1", "Add Days to Expiry")
-    table.add_row("2", "Add Traffic (GB)")
+    table.add_row("1", "Active Users Only")
+    table.add_row("2", "Disabled Users Only")
+    table.add_row("3", "All Users (Active & Disabled)")
     
     console.print(table)
-    console.print("[dim]Enter [bold red]0[/bold red] to go Back[/dim]")
+    console.print("[dim]Enter [bold red]0[/bold red] to go Back, or [bold red]x[/bold red] to Exit script[/dim]")
 
     while True:
-        choice = IntPrompt.ask("Enter choice number")
+        choice = ask_int("Enter choice number")
         if choice == 0:
             return 'BACK'
-        if choice in [1, 2]:
-            return choice - 1
+        if choice == 1:
+            return 'ACTIVE'
+        if choice == 2:
+            return 'DISABLED'
+        if choice == 3:
+            return 'ALL'
         console.print("[red]Invalid choice.[/red]")
 
 def main():
@@ -125,7 +192,6 @@ def main():
         console.clear()
         print_header()
         
-        # 1. Select Database
         db_files = get_db_files()
         if not db_files:
             console.print("[bold red]No .db files found in current directory.[/bold red]")
@@ -140,8 +206,7 @@ def main():
             cursor = conn.cursor()
             console.print(f"[green]✔ Connected to {db_file}[/green]")
 
-            while True: # Inbound Loop
-                # 2. Select Inbound
+            while True: 
                 inbounds = get_inbounds(cursor)
                 selected_inbound_id = menu_select_inbound(inbounds)
                 
@@ -149,249 +214,177 @@ def main():
                     conn.close()
                     break 
 
+                user_status = menu_select_user_status()
+                if user_status == 'BACK':
+                    continue
+
                 target_desc = "[bold]ALL users[/bold]" if selected_inbound_id == 'ALL' else f"Users in Inbound ID ( [bold cyan]{selected_inbound_id}[/bold cyan] )"
+                target_desc += f" [yellow][ {user_status} ][/yellow]"
                 
-                while True: # Operation Loop
+                while True:
                     console.print(Panel(f"Targeting: {target_desc}", style="blue"))
 
-                    # 3. Select Operation
-                    op_idx = menu_select_op()
-                    if op_idx == 'BACK':
-                        break
+                    days = ask_int("Enter number of [bold]DAYS[/bold] to add (Enter 0 to skip, x to exit)", default=0)
+                    gb = ask_float("Enter amount of [bold]Traffic (GB)[/bold] to add (Enter 0 to skip, x to exit)", default=0.0)
+
+                    if days <= 0 and gb <= 0.0:
+                        console.print("[yellow]No changes requested. Returning to database selection...[/yellow]")
+                        break 
+                        
+                    ms_to_add = days * 24 * 60 * 60 * 1000
+                    bytes_to_add = int(gb * 1024 * 1024 * 1024)
+
+                    console.print("\n[yellow]Scanning candidates...[/yellow]")
                     
-                    current_time_ms = int(time.time() * 1000)
+                    if selected_inbound_id == 'ALL':
+                        cursor.execute("SELECT id, settings FROM inbounds")
+                    else:
+                        cursor.execute("SELECT id, settings FROM inbounds WHERE id = ?", (selected_inbound_id,))
+                    
+                    rows = cursor.fetchall()
+                    
+                    eligible_clients = [] 
+                    
+                    client_stats = get_client_stats(cursor)
 
-                    if op_idx == 0: # Expiry
-                        days = IntPrompt.ask("Enter number of [bold]DAYS[/bold] to add (Enter 0 to cancel)")
-                        if days <= 0: continue
+                    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+                        task = progress.add_task("Parsing Inbounds...", total=len(rows))
                         
-                        ms_to_add = days * 24 * 60 * 60 * 1000
-                        
-                        # PRE-FLIGHT CHECK
-                        console.print("\n[yellow]Scanning candidates...[/yellow]")
-                        
-                        if selected_inbound_id == 'ALL':
-                            cursor.execute("SELECT id, settings FROM inbounds")
-                        else:
-                            cursor.execute("SELECT id, settings FROM inbounds WHERE id = ?", (selected_inbound_id,))
-                        
-                        rows = cursor.fetchall()
-                        updates_count = 0
-                        eligible_clients = [] # List of (inbound_id, settings_dict, client_obj, client_email)
-
-                        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
-                            task = progress.add_task("Parsing Inbounds...", total=len(rows))
+                        for row in rows:
+                            inbound_id = row['id']
+                            settings_str = row['settings']
+                            progress.advance(task)
+                            if not settings_str: continue
                             
-                            for row in rows:
-                                inbound_id = row['id']
-                                settings_str = row['settings']
-                                progress.advance(task)
-                                if not settings_str: continue
+                            try:
+                                settings = json.loads(settings_str)
+                                clients = settings.get('clients', [])
+                                if not isinstance(clients, list): continue
                                 
-                                try:
-                                    settings = json.loads(settings_str)
-                                    clients = settings.get('clients', [])
-                                    if not isinstance(clients, list): continue
+                                for client in clients:
+                                    # Skip Start-on-First-Use (negative expiry)
+                                    if client.get('expiryTime', 0) < 0: continue
                                     
-                                    for client in clients:
-                                        is_enabled = client.get('enable', False)
-                                        if isinstance(is_enabled, str): is_enabled = is_enabled.lower() in ('true', '1')
-                                        elif isinstance(is_enabled, int): is_enabled = is_enabled == 1
-                                            
-                                        expiry = client.get('expiryTime', 0)
+                                    # Check Status (Active/Disabled/All)
+                                    is_active = is_user_active(client, client_stats)
+                                    
+                                    is_status_match = False
+                                    if user_status == 'ALL': is_status_match = True
+                                    elif user_status == 'ACTIVE': is_status_match = is_active
+                                    elif user_status == 'DISABLED': is_status_match = not is_active
+                                    
+                                    if not is_status_match: continue
+
+                                    # Determine necessary updates
+                                    do_expiry = False
+                                    do_traffic = False
+
+                                    # Update Expiry if days requested (>0) and user has specific expiry (>0)
+                                    expiry = client.get('expiryTime', 0)
+                                    if days > 0 and expiry > 0:
+                                        do_expiry = True
+
+                                    # Update Traffic if GB requested (>0) and user has specific totalGB (>0)
+                                    total_gb = client.get('totalGB', 0)
+                                    if gb > 0 and total_gb > 0:
+                                        do_traffic = True
                                         
-                                        # ENABLED + LIMITED + NOT EXPIRED
-                                        if is_enabled and expiry > 0 and expiry > current_time_ms:
-                                            eligible_clients.append({
-                                                'inbound_id': inbound_id,
-                                                'settings': settings, # Note: this is a reference to the dict we parsed earlier? 
-                                                # Careful: multiple clients in same inbound share 'settings' dict.
-                                                # We need to group by inbound to save efficiently.
-                                                'client': client
-                                            })
-                                            updates_count += 1
-                                except: pass
-                        
-                        if updates_count == 0:
-                            console.print("[bold red]No matching users found.[/bold red] (Conditions: Enabled, Time-Limited, Not Expired)")
-                            continue
+                                    if do_expiry or do_traffic:
+                                        eligible_clients.append({
+                                            'inbound_id': inbound_id,
+                                            'settings': settings,
+                                            'client': client,
+                                            'do_expiry': do_expiry,
+                                            'do_traffic': do_traffic
+                                        })
 
-                        # Confirmation Panel
-                        console.print(Panel(
-                            f"[bold]Operation:[/bold] Add [cyan]{days}[/cyan] Days\n"
-                            f"[bold]Target:[/bold] {target_desc}\n"
-                            f"[bold]Eligible Users:[/bold] [green]{updates_count}[/green]",
-                            title="Confirm Update",
-                            border_style="yellow"
-                        ))
-                        
-                        if not Confirm.ask("Proceed with update?"):
-                            console.print("[yellow]Cancelled.[/yellow]")
-                            continue
+                            except: pass
+                    
+                    updates_count = len(eligible_clients)
+                    if updates_count == 0:
+                        console.print("[bold red]No matching users found for the requested criteria.[/bold red]")
+                        break
 
-                        # EXECUTE UPDATE
-                        # Group by inbound to minimize JSON dumps
-                        inbound_updates = {} # id -> settings
-                        updated_emails = []
+                    op_summary = []
+                    if days > 0: op_summary.append(f"Add [cyan]{days}[/cyan] Days")
+                    if gb > 0: op_summary.append(f"Add [cyan]{gb}[/cyan] GB")
+                    
+                    console.print(Panel(
+                        f"[bold]Operation:[/bold] {', '.join(op_summary)}\n"
+                        f"[bold]Target:[/bold] {target_desc}\n"
+                        f"[bold]Eligible Users:[/bold] [green]{updates_count}[/green]",
+                        title="Confirm Update",
+                        border_style="yellow"
+                    ))
+                    
+                    if not Confirm.ask("Proceed with update?"):
+                        console.print("[yellow]Cancelled.[/yellow]")
+                        break
+
+                    inbound_updates = {}
+                    emails_expiry_update = []
+                    emails_traffic_update = []
+                    
+                    with Progress(
+                        SpinnerColumn(), 
+                        BarColumn(), 
+                        TaskProgressColumn(), 
+                        TextColumn("[progress.description]{task.description}"), 
+                        transient=False
+                    ) as progress:
+                        update_task = progress.add_task("Applying Updates...", total=updates_count)
                         
-                        with Progress(
-                            SpinnerColumn(),
-                            BarColumn(),
-                            TaskProgressColumn(),
-                            TextColumn("[progress.description]{task.description}"), 
-                            transient=False
-                        ) as progress:
-                            update_task = progress.add_task("Applying Updates...", total=updates_count)
+                        for item in eligible_clients:
+                            client = item['client']
                             
-                            for item in eligible_clients:
-                                client = item['client']
+                            if item['do_expiry']:
                                 client['expiryTime'] = client.get('expiryTime', 0) + ms_to_add
-                                
-                                i_id = item['inbound_id']
-                                if i_id not in inbound_updates:
-                                    inbound_updates[i_id] = item['settings']
-                                
-                                email = client.get('email')
-                                if email: updated_emails.append(email)
-                                
-                                progress.advance(update_task)
+                                if client.get('email'): emails_expiry_update.append(client['email'])
 
-                            # Save to DB
-                            save_task = progress.add_task("Saving to Database...", total=len(inbound_updates))
-                            for i_id, settings in inbound_updates.items():
-                                new_settings = json.dumps(settings)
-                                cursor.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings, i_id))
-                                progress.advance(save_task)
-                            
-                            # Update Client Traffics Table
-                            if updated_emails:
-                                sync_task = progress.add_task("Syncing client_traffics...", total=len(updated_emails))
-                                chunk_size = 900
-                                for i in range(0, len(updated_emails), chunk_size):
-                                    chunk = updated_emails[i:i+chunk_size]
-                                    placeholders = ','.join('?' for _ in chunk)
-                                    sql = f"UPDATE client_traffics SET expiry_time = expiry_time + ? WHERE email IN ({placeholders})"
-                                    params = [ms_to_add] + chunk
-                                    cursor.execute(sql, params)
-                                    progress.advance(sync_task, advance=len(chunk))
-                        
-                        conn.commit()
-                        console.print(f"\n[bold green]✔ Successfully updated {updates_count} users.[/bold green]")
-
-
-                    elif op_idx == 1: # Traffic
-                        gb = FloatPrompt.ask("Enter amount of Traffic in [bold]GB[/bold] to add (Enter 0 to cancel)")
-                        if gb <= 0: continue
-                        
-                        bytes_to_add = int(gb * 1024 * 1024 * 1024)
-                        
-                        console.print("\n[yellow]Scanning candidates...[/yellow]")
-                        
-                        if selected_inbound_id == 'ALL':
-                            cursor.execute("SELECT id, settings FROM inbounds")
-                        else:
-                            cursor.execute("SELECT id, settings FROM inbounds WHERE id = ?", (selected_inbound_id,))
-                        
-                        rows = cursor.fetchall()
-                        updates_count = 0
-                        eligible_clients = []
-
-                        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
-                            task = progress.add_task("Parsing Inbounds...", total=len(rows))
-                            
-                            for row in rows:
-                                inbound_id = row['id']
-                                settings_str = row['settings']
-                                progress.advance(task)
-                                if not settings_str: continue
-                                
-                                try:
-                                    settings = json.loads(settings_str)
-                                    clients = settings.get('clients', [])
-                                    if not isinstance(clients, list): continue
-                                    
-                                    for client in clients:
-                                        is_enabled = client.get('enable', False)
-                                        if isinstance(is_enabled, str): is_enabled = is_enabled.lower() in ('true', '1')
-                                        elif isinstance(is_enabled, int): is_enabled = is_enabled == 1
-                                            
-                                        total = client.get('totalGB', 0)
-                                        expiry = client.get('expiryTime', 0)
-                                        
-                                        # Check if expired
-                                        is_not_expired = True
-                                        if expiry > 0 and expiry < current_time_ms:
-                                            is_not_expired = False
-                                        
-                                        # ENABLED + LIMITED TRAFFIC + NOT EXPIRED
-                                        if is_enabled and total > 0 and is_not_expired:
-                                            eligible_clients.append({
-                                                'inbound_id': inbound_id,
-                                                'settings': settings,
-                                                'client': client
-                                            })
-                                            updates_count += 1
-                                except: pass
-                        
-                        if updates_count == 0:
-                            console.print("[bold red]No matching users found.[/bold red] (Conditions: Enabled, Traffic-Limited, Not Expired)")
-                            continue
-
-                        console.print(Panel(
-                            f"[bold]Operation:[/bold] Add [cyan]{gb}[/cyan] GB\n"
-                            f"[bold]Target:[/bold] {target_desc}\n"
-                            f"[bold]Eligible Users:[/bold] [green]{updates_count}[/green]",
-                            title="Confirm Update",
-                            border_style="yellow"
-                        ))
-                        
-                        if not Confirm.ask("Proceed with update?"):
-                            console.print("[yellow]Cancelled.[/yellow]")
-                            continue
-
-                        inbound_updates = {}
-                        updated_emails = []
-                        
-                        with Progress(
-                            SpinnerColumn(), 
-                            BarColumn(), 
-                            TaskProgressColumn(), 
-                            TextColumn("[progress.description]{task.description}"), 
-                            transient=False
-                        ) as progress:
-                            update_task = progress.add_task("Applying Updates...", total=updates_count)
-                            
-                            for item in eligible_clients:
-                                client = item['client']
+                            if item['do_traffic']:
                                 client['totalGB'] = client.get('totalGB', 0) + bytes_to_add
-                                
-                                i_id = item['inbound_id']
-                                if i_id not in inbound_updates:
-                                    inbound_updates[i_id] = item['settings']
-                                
-                                email = client.get('email')
-                                if email: updated_emails.append(email)
-                                progress.advance(update_task)
-
-                            save_task = progress.add_task("Saving to Database...", total=len(inbound_updates))
-                            for i_id, settings in inbound_updates.items():
-                                new_settings = json.dumps(settings)
-                                cursor.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings, i_id))
-                                progress.advance(save_task)
+                                if client.get('email'): emails_traffic_update.append(client['email'])
                             
-                            if updated_emails:
-                                sync_task = progress.add_task("Syncing client_traffics...", total=len(updated_emails))
-                                chunk_size = 900
-                                for i in range(0, len(updated_emails), chunk_size):
-                                    chunk = updated_emails[i:i+chunk_size]
-                                    placeholders = ','.join('?' for _ in chunk)
-                                    sql = f"UPDATE client_traffics SET total = total + ? WHERE email IN ({placeholders})"
-                                    params = [bytes_to_add] + chunk
-                                    cursor.execute(sql, params)
-                                    progress.advance(sync_task, advance=len(chunk))
+                            i_id = item['inbound_id']
+                            if i_id not in inbound_updates:
+                                inbound_updates[i_id] = item['settings']
+                            
+                            progress.advance(update_task)
 
-                        conn.commit()
-                        console.print(f"\n[bold green]✔ Successfully updated {updates_count} users.[/bold green]")
+                        save_task = progress.add_task("Saving to Database...", total=len(inbound_updates))
+                        for i_id, settings in inbound_updates.items():
+                            new_settings = json.dumps(settings)
+                            cursor.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings, i_id))
+                            progress.advance(save_task)
+                        
+                        if emails_expiry_update:
+                            sync_exp_task = progress.add_task("Syncing Expiry...", total=len(emails_expiry_update))
+                            chunk_size = 900
+                            for i in range(0, len(emails_expiry_update), chunk_size):
+                                chunk = emails_expiry_update[i:i+chunk_size]
+                                placeholders = ','.join('?' for _ in chunk)
+                                sql = f"UPDATE client_traffics SET expiry_time = expiry_time + ? WHERE email IN ({placeholders})"
+                                params = [ms_to_add] + chunk
+                                cursor.execute(sql, params)
+                                progress.advance(sync_exp_task, advance=len(chunk))
+
+                        if emails_traffic_update:
+                            sync_trf_task = progress.add_task("Syncing Traffic...", total=len(emails_traffic_update))
+                            chunk_size = 900
+                            for i in range(0, len(emails_traffic_update), chunk_size):
+                                chunk = emails_traffic_update[i:i+chunk_size]
+                                placeholders = ','.join('?' for _ in chunk)
+                                sql = f"UPDATE client_traffics SET total = total + ? WHERE email IN ({placeholders})"
+                                params = [bytes_to_add] + chunk
+                                cursor.execute(sql, params)
+                                progress.advance(sync_trf_task, advance=len(chunk))
+
+                    conn.commit()
+                    console.print(f"\n[bold green]✔ Successfully updated {updates_count} users.[/bold green]")
+                    console.print("[dim]Enter [bold red]0[/bold red] to go Back, or [bold red]x[/bold red] to Exit script[/dim]")
+                    ask_int("Enter choice number", default=0)
+                    
+                    break
 
         except sqlite3.Error as e:
             console.print(f"[bold red]Database error:[/bold red] {e}")
