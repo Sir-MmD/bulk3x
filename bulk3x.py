@@ -83,7 +83,7 @@ def is_user_active(client, stats):
 
 def print_header():
     console.print(Panel.fit(
-        "[bold cyan]Bulk3X[/bold cyan]\n[dim]Manage Expiry and Traffic Quotas with Ease[/dim]",
+        "[bold cyan]Bulk3X[/bold cyan]\n[dim]Add Expiry and Traffic in Bulk to 3x-ui Databases[/dim]",
         border_style="cyan",
         padding=(1, 2)
     ))
@@ -345,6 +345,10 @@ def main():
                                 client['totalGB'] = client.get('totalGB', 0) + bytes_to_add
                                 if client.get('email'): emails_traffic_update.append(client['email'])
                             
+                            # Force Enable
+                            client['enable'] = True
+
+                            
                             i_id = item['inbound_id']
                             if i_id not in inbound_updates:
                                 inbound_updates[i_id] = item['settings']
@@ -377,7 +381,21 @@ def main():
                                 sql = f"UPDATE client_traffics SET total = total + ? WHERE email IN ({placeholders})"
                                 params = [bytes_to_add] + chunk
                                 cursor.execute(sql, params)
+
                                 progress.advance(sync_trf_task, advance=len(chunk))
+
+                        # Sync Enable Status
+                        all_emails = list(set(emails_expiry_update + emails_traffic_update))
+                        if all_emails:
+                            sync_enable_task = progress.add_task("Syncing Enable Status...", total=len(all_emails))
+                            chunk_size = 900
+                            for i in range(0, len(all_emails), chunk_size):
+                                chunk = all_emails[i:i+chunk_size]
+                                placeholders = ','.join('?' for _ in chunk)
+                                sql = f"UPDATE client_traffics SET enable = 1 WHERE email IN ({placeholders})"
+                                params = chunk
+                                cursor.execute(sql, params)
+                                progress.advance(sync_enable_task, advance=len(chunk))
 
                     conn.commit()
                     console.print(f"\n[bold green]✔ Successfully updated {updates_count} users.[/bold green]")
